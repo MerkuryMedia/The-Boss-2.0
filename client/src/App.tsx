@@ -326,13 +326,13 @@ function App() {
   };
 
   const comboWinPhrases: Record<number, string> = {
-    1: 'wins with a Bullseye',
-    2: 'wins with The Horns',
-    3: 'wins with a Tackle',
-    4: 'wins with a Hoof',
-    5: 'wins with a Matador',
-    6: 'wins with a Scramble',
-    7: 'wins with a Flag',
+    1: 'a Bullseye',
+    2: 'The Horns',
+    3: 'a Tackle',
+    4: 'a Hoof',
+    5: 'a Matador',
+    6: 'a Scramble',
+    7: 'a Flag',
   };
 
   const formatPot = (amount: number) => `$${amount.toLocaleString()}`;
@@ -351,11 +351,8 @@ function App() {
       case 'oxtail':
         return `${primaryWinner.username} wins ${potText} pot and grabs the Oxtail`;
       case 'exact': {
-        const phrase = comboWinPhrases[handResult.comboCardCount ?? 0];
-        if (phrase) {
-          return `${primaryWinner.username} wins ${potText} pot ${phrase.replace('wins ', 'with ')}`;
-        }
-        return `${primaryWinner.username} wins ${potText} pot`;
+        const phrase = comboWinPhrases[handResult.comboCardCount ?? 0] ?? 'an exact match';
+        return `${primaryWinner.username} wins ${potText} pot with ${phrase}`;
       }
       case 'split':
         return `${handResult.description} (${potText} total)`;
