@@ -70,6 +70,7 @@ export class GameEngine {
   private comboIndex = 0;
   private lastResult?: HandResult;
   private oxtailActive = false;
+  private oxtailContestants = new Set<string>();
 
   private broadcastCallback?: (event: EngineEvent) => void;
 
@@ -252,10 +253,10 @@ export class GameEngine {
   comboSubmit(playerId: string, message: ComboSubmitMessage) {
     const player = this.players.get(playerId);
     if (!player || !player.inHand || player.hasFolded) return;
-    if (this.phase !== 'combo') {
-      return this.emit({ type: 'error', playerId, message: 'Not combo phase' });
+    if (!this.awaitingCombo.has(playerId)) {
+      this.updatePrivate(playerId);
+      return;
     }
-    if (!this.awaitingCombo.has(playerId)) return;
     if (!player.seatIndex || player.seatIndex !== this.actingSeat) {
       return this.emit({ type: 'error', playerId, message: 'Not your turn' });
     }
@@ -316,6 +317,7 @@ export class GameEngine {
     this.lastResult = undefined;
     this.actedThisRound.clear();
     this.oxtailActive = false;
+    this.oxtailContestants.clear();
     this.broadcast();
   }
 
@@ -340,6 +342,8 @@ export class GameEngine {
   }
 
   private resetPlayersForHand(players: EnginePlayer[]) {
+    this.oxtailActive = false;
+    this.oxtailContestants.clear();
     for (const player of this.players.values()) {
       player.inHand = false;
       player.hasFolded = false;
@@ -489,10 +493,8 @@ export class GameEngine {
     const active = this.activePlayers();
     for (const player of active) {
       this.awaitingCombo.add(player.id);
-      if (!oxtail) {
-        player.comboSelection = [];
-        player.comboRevealed = undefined;
-      }
+      player.comboSelection = [];
+      player.comboRevealed = undefined;
     }
     this.comboQueue = this.buildComboOrder();
     this.comboIndex = 0;
@@ -539,49 +541,79 @@ export class GameEngine {
         .filter((card): card is Card => Boolean(card));
       const total = this.computeComboTotal(player, player.comboSelection);
       const bossTotal = this.computeBossTotal();
+      const diff = Math.abs(bossTotal - total);
+      const isExact = diff === 0;
       return {
         player,
         total,
-        diff: Math.abs(bossTotal - total),
-        under: total <= bossTotal,
+        diff,
+        isExact,
+        under: total < bossTotal,
         suitMatches: this.countSuitMatches(cards),
+        cardCount: player.comboSelection.length,
       };
     });
-    evaluated.sort((a, b) => {
-      if (a.diff !== b.diff) return a.diff - b.diff;
-      if (a.under !== b.under) return a.under ? -1 : 1;
-      if (a.suitMatches !== b.suitMatches) return b.suitMatches - a.suitMatches;
-      return 0;
-    });
-    const best = evaluated[0];
-    const ties = evaluated.filter(
-      (item) =>
-        item.diff === best.diff && item.under === best.under && item.suitMatches === best.suitMatches,
-    );
-    if (ties.length > 1) {
-      if (this.deck.length === 0) {
-        this.splitPot(ties.map((t) => t.player));
-      } else {
-        this.startOxtail();
+    const exacts = evaluated.filter((entry) => entry.isExact);
+    let ranking: typeof evaluated = [];
+    if (exacts.length > 0) {
+      ranking = exacts.sort((a, b) => {
+        if (a.cardCount !== b.cardCount) return a.cardCount - b.cardCount;
+        if (a.suitMatches !== b.suitMatches) return b.suitMatches - a.suitMatches;
+        return 0;
+      });
+      const leader = ranking[0];
+      const tieGroup = ranking.filter(
+        (entry) =>
+          entry.total === leader.total &&
+          entry.cardCount === leader.cardCount &&
+          entry.suitMatches === leader.suitMatches,
+      );
+      if (tieGroup.length > 1) {
+        this.beginOxtailRound(tieGroup.map((t) => t.player));
+        return;
       }
-      return;
+    } else {
+      ranking = evaluated.sort((a, b) => {
+        if (a.diff !== b.diff) return a.diff - b.diff;
+        if (a.under !== b.under) return a.under ? -1 : 1;
+        if (a.suitMatches !== b.suitMatches) return b.suitMatches - a.suitMatches;
+        return 0;
+      });
     }
-    const comboCount = best.player.comboSelection.length;
-    const exactMatch = best.diff === 0;
+    const best = ranking[0];
+    const comboCount = best.cardCount;
     const winType: 'closest' | 'exact' | 'oxtail' =
-      this.oxtailActive ? 'oxtail' : exactMatch ? 'exact' : 'closest';
+      this.oxtailActive ? 'oxtail' : best.isExact ? 'exact' : 'closest';
     this.awardPot(best.player, {
       winType,
       comboCardCount: comboCount,
     });
   }
 
-  private startOxtail() {
-    this.phase = 'oxtail';
+  private beginOxtailRound(players: EnginePlayer[]) {
+    if (players.length === 0) return;
+    if (this.deck.length === 0) {
+      this.splitPot(players);
+      return;
+    }
     this.oxtailActive = true;
+    this.phase = 'oxtail';
+    const tiedIds = new Set(players.map((p) => p.id));
+    this.oxtailContestants = tiedIds;
+    for (const player of this.players.values()) {
+      if (tiedIds.has(player.id)) {
+        player.inHand = true;
+        player.hasFolded = false;
+      } else {
+        player.inHand = false;
+        player.hasFolded = true;
+      }
+    }
     const newCard = this.drawCards(1)[0];
-    this.bossCards.push(newCard);
-    this.bossRevealedCount += 1;
+    if (newCard) {
+      this.bossCards.push(newCard);
+      this.bossRevealedCount += 1;
+    }
     this.startBettingRound(this.smallBlindSeat);
     this.broadcast();
   }
@@ -622,6 +654,7 @@ export class GameEngine {
   private endHand() {
     this.phase = 'waiting';
     this.oxtailActive = false;
+    this.oxtailContestants.clear();
     this.bossCards = [];
     this.bossRevealedCount = 0;
     this.bossVisible = false;
@@ -637,6 +670,7 @@ export class GameEngine {
       player.comboSelection = [];
       player.comboRevealed = undefined;
       player.betThisRound = 0;
+      player.hand = [];
     }
     this.broadcast();
   }
