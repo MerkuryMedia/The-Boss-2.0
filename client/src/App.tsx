@@ -98,6 +98,7 @@ function App() {
   const [privateState, setPrivateState] = useState<PlayerPrivateState | null>(null);
   const [handResult, setHandResult] = useState<HandResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [raiseAmount, setRaiseAmount] = useState(10);
 
   useEffect(() => {
     if (!socket.current) return;
@@ -161,9 +162,9 @@ function App() {
     socket.current.emit('start_hand');
   };
 
-  const sendBetAction = (action: BetActionMessage['action']) => {
+  const sendBetAction = (action: BetActionMessage['action'], amount?: number) => {
     if (!socket.current) return;
-    socket.current.emit('bet_action', { action });
+    socket.current.emit('bet_action', { action, amount });
   };
 
   const submitCombo = () => {
@@ -264,7 +265,15 @@ function App() {
     });
     return map;
   }, [privateState?.comboSelection]);
+
+  const mySeatSummary = useMemo(() => {
+    if (!snapshot || !privateState) return undefined;
+    return snapshot.seats.find((seat) => seat.player?.id === privateState.playerId)?.player;
+  }, [snapshot, privateState?.playerId]);
+
   const actionButtons = (privateState?.actions ?? []).filter((action) => action !== 'submit_combo');
+  const raiseAvailable = actionButtons.includes('raise');
+  const nonRaiseActions = actionButtons.filter((action) => action !== 'raise');
 
   const bossTotal = snapshot ? snapshot.bossCards.reduce((sum, card) => sum + getBossValue(card), 0) : 0;
   const comboSuitMatches = useMemo(() => {
@@ -277,6 +286,36 @@ function App() {
     });
     return countSuitMatches(selectedCards, snapshot?.bossCards ?? []);
   }, [privateState?.comboSelection, privateState?.hand, snapshot?.bossCards]);
+
+  const raiseStep = 10;
+  const callNeeded = Math.max(0, (snapshot?.currentBet ?? 0) - (mySeatSummary?.betThisRound ?? 0));
+  const availableRaise = Math.max(0, (privateState?.stack ?? 0) - callNeeded);
+  const maxRaiseAmount = Math.floor(availableRaise / raiseStep) * raiseStep;
+  const minRaiseBase = Math.max(snapshot?.minimumRaise ?? raiseStep, raiseStep);
+  const canRaise = raiseAvailable && maxRaiseAmount >= minRaiseBase;
+
+  useEffect(() => {
+    if (!raiseAvailable) {
+      setRaiseAmount(minRaiseBase);
+      return;
+    }
+    if (!canRaise) {
+      setRaiseAmount(minRaiseBase);
+      return;
+    }
+    setRaiseAmount((prev) => {
+      const clamped = Math.min(Math.max(prev, minRaiseBase), maxRaiseAmount);
+      return Number.isNaN(clamped) ? minRaiseBase : clamped;
+    });
+  }, [raiseAvailable, minRaiseBase, maxRaiseAmount, canRaise]);
+
+  const adjustRaiseAmount = (delta: number) => {
+    if (!canRaise) return;
+    setRaiseAmount((prev) => {
+      const next = Math.min(Math.max(prev + delta, minRaiseBase), maxRaiseAmount);
+      return Number.isNaN(next) ? prev : next;
+    });
+  };
 
   return (
     <div className="poker-background text-emerald-50">
@@ -394,7 +433,7 @@ function App() {
           </div>
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap gap-2">
-              {actionButtons.map((action) => (
+              {nonRaiseActions.map((action) => (
                 <button
                   key={action}
                   className="rounded bg-emerald-600/80 px-4 py-2 text-sm font-semibold uppercase tracking-wide text-white hover:bg-emerald-500 disabled:opacity-40"
@@ -403,6 +442,34 @@ function App() {
                   {action}
                 </button>
               ))}
+              {raiseAvailable && (
+                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-emerald-500/50 bg-black/30 px-3 py-2">
+                  <button
+                    className="rounded bg-emerald-700/70 px-2 py-1 text-white disabled:opacity-30"
+                    onClick={() => adjustRaiseAmount(-raiseStep)}
+                    disabled={!canRaise || raiseAmount <= minRaiseBase}
+                  >
+                    -
+                  </button>
+                  <div className="min-w-[70px] text-center text-sm font-semibold text-emerald-100">
+                    ${raiseAmount}
+                  </div>
+                  <button
+                    className="rounded bg-emerald-700/70 px-2 py-1 text-white disabled:opacity-30"
+                    onClick={() => adjustRaiseAmount(raiseStep)}
+                    disabled={!canRaise || raiseAmount >= maxRaiseAmount}
+                  >
+                    +
+                  </button>
+                  <button
+                    className="rounded bg-yellow-400 px-4 py-1 text-sm font-semibold uppercase tracking-wide text-black hover:bg-yellow-300 disabled:opacity-40"
+                    onClick={() => sendBetAction('raise', raiseAmount)}
+                    disabled={!canRaise}
+                  >
+                    Raise
+                  </button>
+                </div>
+              )}
               {canSubmitCombo && (
                 <button
                   className="rounded bg-yellow-400 px-4 py-2 text-sm font-semibold uppercase tracking-wide text-black hover:bg-yellow-300"

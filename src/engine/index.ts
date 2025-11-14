@@ -206,21 +206,33 @@ export class GameEngine {
         this.callContribution(player);
         player.lastAction = 'Call';
         break;
-      case 'raise':
+      case 'raise': {
         if (player.stack <= 0) {
           return this.emit({ type: 'error', playerId, message: 'No chips' });
         }
-        const target = this.currentBet + RAISE_INCREMENT;
-        const needed = target - player.betThisRound;
-        if (needed <= 0) {
-          return this.emit({ type: 'error', playerId, message: 'Cannot raise' });
+        const desiredRaise = message.amount ?? RAISE_INCREMENT;
+        if (desiredRaise < RAISE_INCREMENT || desiredRaise % RAISE_INCREMENT !== 0) {
+          return this.emit({ type: 'error', playerId, message: 'Invalid raise amount' });
         }
+        const callNeeded = Math.max(0, this.currentBet - player.betThisRound);
+        if (player.stack <= callNeeded) {
+          return this.emit({ type: 'error', playerId, message: 'Not enough chips to raise' });
+        }
+        const availableRaise = Math.min(
+          desiredRaise,
+          Math.floor((player.stack - callNeeded) / RAISE_INCREMENT) * RAISE_INCREMENT,
+        );
+        if (availableRaise < RAISE_INCREMENT) {
+          return this.emit({ type: 'error', playerId, message: 'Raise below minimum' });
+        }
+        const needed = callNeeded + availableRaise;
         this.commitAmount(player, needed);
         this.currentBet = player.betThisRound;
-        this.minimumRaise = RAISE_INCREMENT;
+        this.minimumRaise = Math.max(RAISE_INCREMENT, availableRaise);
         player.lastAction = 'Raise';
         resetActed = true;
         break;
+      }
     }
     this.markSeatActed(player.seatIndex, resetActed);
     this.advanceTurn();

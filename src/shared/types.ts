@@ -104,6 +104,7 @@ export interface SeatTakeMessage {
 
 export interface BetActionMessage {
   action: 'fold' | 'check' | 'call' | 'raise';
+  amount?: number;
 }
 
 export interface ComboUpdateMessage {
