@@ -1,7 +1,7 @@
 import {
   BetActionMessage,
   Card,
-  ClientToServerEvents,
+  ComboSelection,
   ComboSubmitMessage,
   ComboUpdateMessage,
   HandResult,
@@ -10,7 +10,6 @@ import {
   PlayerPrivateState,
   PlayerSummary,
   SeatIndex,
-  SeatInfo,
   TableSnapshot,
   SEAT_COUNT,
 } from '../shared/types';
@@ -29,7 +28,7 @@ export interface EnginePlayer {
   hasFolded: boolean;
   betThisRound: number;
   totalBet: number;
-  comboSelection: string[];
+  comboSelection: ComboSelection[];
   comboRevealed?: Card[];
   isDealer: boolean;
   isSmallBlind: boolean;
@@ -43,6 +42,7 @@ export type EngineEvent =
   | { type: 'result'; result: HandResult }
   | { type: 'error'; playerId?: string; message: string };
 
+const STARTING_STACK = 500;
 const SMALL_BLIND = 5;
 const BIG_BLIND = 10;
 const RAISE_INCREMENT = 10;
@@ -54,6 +54,7 @@ export class GameEngine {
   private deck: Card[] = [];
   private bossCards: Card[] = [];
   private bossRevealedCount = 0;
+  private bossVisible = false;
   private phase: Phase = 'waiting';
   private dealerSeat?: SeatIndex;
   private currentBet = 0;
@@ -88,7 +89,7 @@ export class GameEngine {
       this.players.set(playerId, {
         id: playerId,
         username,
-        stack: 500,
+        stack: STARTING_STACK,
         entryHand: this.handNumber + (this.isHandActive() ? 1 : 0),
         hand: [],
         inHand: false,
@@ -207,14 +208,10 @@ export class GameEngine {
 
   comboUpdate(playerId: string, message: ComboUpdateMessage) {
     const player = this.players.get(playerId);
-    if (!player || !player.inHand || player.hasFolded) return;
-    if (this.phase !== 'combo') return;
-    if (!this.awaitingCombo.has(playerId)) return;
-    const unique = Array.from(new Set(message.cardIds));
-    if (!this.validateComboCards(player, unique)) {
-      return;
-    }
-    player.comboSelection = unique;
+    if (!player) return;
+    if (player.hand.length === 0) return;
+    const selections = this.sanitizeSelections(player, message.selections);
+    player.comboSelection = selections;
     this.updatePrivate(playerId);
   }
 
@@ -225,17 +222,14 @@ export class GameEngine {
       return this.emit({ type: 'error', playerId, message: 'Not combo phase' });
     }
     if (!this.awaitingCombo.has(playerId)) return;
-    const unique = Array.from(new Set(message.cardIds));
-    if (!this.validateComboCards(player, unique)) {
-      return this.emit({ type: 'error', playerId, message: 'Invalid combo' });
-    }
-    const total = this.computeComboTotal(unique.map((id) => this.findCardInHand(player, id)!));
+    const selections = this.sanitizeSelections(player, message.selections);
+    const total = this.computeComboTotal(player, selections);
     const bossTotal = this.computeBossTotal();
     if (total > bossTotal) {
       return this.emit({ type: 'error', playerId, message: 'Combo exceeds Boss total' });
     }
-    player.comboSelection = unique;
-    player.comboRevealed = unique.map((id) => this.findCardInHand(player, id)!);
+    player.comboSelection = selections;
+    player.comboRevealed = selections.map((selection) => this.findCardInHand(player, selection.cardId)!);
     this.awaitingCombo.delete(playerId);
     if (this.awaitingCombo.size === 0) {
       this.evaluateCombos();
@@ -244,12 +238,50 @@ export class GameEngine {
     }
   }
 
+  restartTable() {
+    for (const player of this.players.values()) {
+      player.stack = STARTING_STACK;
+      player.seatIndex = undefined;
+      player.entryHand = 0;
+      player.hand = [];
+      player.inHand = false;
+      player.hasFolded = false;
+      player.betThisRound = 0;
+      player.totalBet = 0;
+      player.comboSelection = [];
+      player.comboRevealed = undefined;
+      player.isDealer = false;
+      player.isSmallBlind = false;
+      player.isBigBlind = false;
+    }
+    this.seats = Array(SEAT_COUNT).fill(null);
+    this.handNumber = 0;
+    this.deck = [];
+    this.bossCards = [];
+    this.bossRevealedCount = 0;
+    this.bossVisible = false;
+    this.phase = 'waiting';
+    this.dealerSeat = undefined;
+    this.currentBet = 0;
+    this.minimumRaise = RAISE_INCREMENT;
+    this.pot = 0;
+    this.sidePot = 0;
+    this.actingSeat = undefined;
+    this.message = 'Waiting for players';
+    this.bettingAnchorSeat = undefined;
+    this.lastAggressorSeat = undefined;
+    this.awaitingCombo.clear();
+    this.lastResult = undefined;
+    this.broadcast();
+  }
+
   private beginHand(players: EnginePlayer[]) {
     this.handNumber += 1;
     this.resetPlayersForHand(players);
     this.deck = this.buildDeck();
     this.bossCards = this.drawCards(5);
     this.bossRevealedCount = 3;
+    this.bossVisible = false;
     this.phase = 'rush';
     this.pot = 0;
     this.sidePot = 0;
@@ -257,6 +289,7 @@ export class GameEngine {
     this.minimumRaise = RAISE_INCREMENT;
     this.message = 'The Rush';
     this.dealHands(players);
+    this.bossVisible = true;
     this.assignBlinds(players);
     this.startBettingRound(this.getSeatLeftOfDealer());
   }
@@ -420,8 +453,10 @@ export class GameEngine {
       return;
     }
     const evaluated = contenders.map((player) => {
-      const cards = player.comboSelection.map((id) => this.findCardInHand(player, id)!);
-      const total = this.computeComboTotal(cards);
+      const cards = player.comboSelection
+        .map((selection) => this.findCardInHand(player, selection.cardId))
+        .filter((card): card is Card => Boolean(card));
+      const total = this.computeComboTotal(player, player.comboSelection);
       const bossTotal = this.computeBossTotal();
       return {
         player,
@@ -492,6 +527,7 @@ export class GameEngine {
     this.phase = 'waiting';
     this.bossCards = [];
     this.bossRevealedCount = 0;
+    this.bossVisible = false;
     this.actingSeat = undefined;
     this.message = 'Waiting for dealer';
     this.rotateDealer();
@@ -632,26 +668,34 @@ export class GameEngine {
     this.sidePot = side;
   }
 
-  private validateComboCards(player: EnginePlayer, cardIds: string[]) {
-    if (cardIds.length === 0) return true;
-    return cardIds.every((id) => this.findCardInHand(player, id));
+  private sanitizeSelections(player: EnginePlayer, selections: ComboSelection[]) {
+    const result: ComboSelection[] = [];
+    const seen = new Set<string>();
+    for (const selection of selections) {
+      if (seen.has(selection.cardId)) continue;
+      const card = this.findCardInHand(player, selection.cardId);
+      if (!card) continue;
+      const mode = card.rank === 'A' && selection.mode === 'high' ? 'high' : 'low';
+      result.push({ cardId: card.id, mode });
+      seen.add(card.id);
+    }
+    return result;
   }
 
   private findCardInHand(player: EnginePlayer, cardId: string) {
     return player.hand.find((card) => card.id === cardId);
   }
 
-  private computeComboTotal(cards: Card[]) {
+  private computeComboTotal(player: EnginePlayer, selections: ComboSelection[]) {
     let total = 0;
-    let aces = 0;
-    for (const card of cards) {
-      const value = this.getCardValue(card.rank);
-      total += value;
-      if (card.rank === 'A') aces += 1;
-    }
-    while (aces > 0 && total + 10 <= this.computeBossTotal()) {
-      total += 10;
-      aces -= 1;
+    for (const selection of selections) {
+      const card = this.findCardInHand(player, selection.cardId);
+      if (!card) continue;
+      if (card.rank === 'A') {
+        total += selection.mode === 'high' ? 11 : 1;
+      } else {
+        total += this.getCardValue(card.rank);
+      }
     }
     return total;
   }
@@ -726,9 +770,7 @@ export class GameEngine {
       stack: player.stack,
       hand: player.hand,
       comboSelection: player.comboSelection,
-      comboTotal: this.computeComboTotal(
-        player.comboSelection.map((id) => this.findCardInHand(player, id)!),
-      ),
+      comboTotal: this.computeComboTotal(player, player.comboSelection),
       actions: this.getAvailableActions(player),
     };
     this.emit({ type: 'private', playerId, state });
@@ -752,6 +794,10 @@ export class GameEngine {
   }
 
   private broadcast() {
+    for (const playerId of this.players.keys()) {
+      this.updatePrivate(playerId);
+    }
+
     const snapshot: TableSnapshot = {
       seats: this.seats.map((playerId, index) => {
         const seatIndex = (index + 1) as SeatIndex;
@@ -785,14 +831,11 @@ export class GameEngine {
       currentBet: this.currentBet,
       minimumRaise: this.minimumRaise,
       actingSeat: this.actingSeat,
-      bossCards: this.bossCards.slice(0, this.bossRevealedCount),
-      bossRevealedCount: this.bossRevealedCount,
+      bossCards: this.bossVisible ? this.bossCards.slice(0, this.bossRevealedCount) : [],
+      bossRevealedCount: this.bossVisible ? this.bossRevealedCount : 0,
       message: this.message,
     };
     this.emit({ type: 'snapshot', snapshot });
-    for (const playerId of this.players.keys()) {
-      this.updatePrivate(playerId);
-    }
   }
 
   private isHandActive() {

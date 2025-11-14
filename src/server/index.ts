@@ -98,6 +98,13 @@ io.on('connection', (socket) => {
     engine.comboSubmit(playerId, payload);
   });
 
+  socket.on('restart_table', () => {
+    const playerId = socketToPlayer.get(socket.id);
+    if (!playerId) return;
+    engine.restartTable();
+    io.emit('table_reset');
+  });
+
   socket.on('disconnect', () => {
     const playerId = socketToPlayer.get(socket.id);
     if (!playerId) return;

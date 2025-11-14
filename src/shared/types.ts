@@ -69,12 +69,19 @@ export interface TableSnapshot {
   message: string;
 }
 
+export type ComboMode = 'low' | 'high';
+
+export interface ComboSelection {
+  cardId: string;
+  mode: ComboMode;
+}
+
 export interface PlayerPrivateState {
   playerId: string;
   seatIndex?: SeatIndex;
   stack: number;
   hand: Card[];
-  comboSelection: string[];
+  comboSelection: ComboSelection[];
   comboTotal: number;
   actions: PlayerAction[];
 }
@@ -100,11 +107,11 @@ export interface BetActionMessage {
 }
 
 export interface ComboUpdateMessage {
-  cardIds: string[];
+  selections: ComboSelection[];
 }
 
 export interface ComboSubmitMessage {
-  cardIds: string[];
+  selections: ComboSelection[];
 }
 
 export interface ClientToServerEvents {
@@ -115,6 +122,7 @@ export interface ClientToServerEvents {
   bet_action: (msg: BetActionMessage) => void;
   combo_update: (msg: ComboUpdateMessage) => void;
   combo_submit: (msg: ComboSubmitMessage) => void;
+  restart_table: () => void;
   heartbeat: () => void;
 }
 
@@ -123,4 +131,5 @@ export interface ServerToClientEvents {
   player_private_state: (state: PlayerPrivateState) => void;
   hand_result: (result: HandResult) => void;
   error: (message: string) => void;
+  table_reset: () => void;
 }

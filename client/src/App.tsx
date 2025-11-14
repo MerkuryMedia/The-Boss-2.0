@@ -4,6 +4,7 @@ import clsx from 'clsx';
 import type {
   BetActionMessage,
   Card,
+  ComboSelection,
   ComboSubmitMessage,
   ComboUpdateMessage,
   HandResult,
@@ -103,15 +104,22 @@ function App() {
       setTimeout(() => setErrorMessage(null), 3000);
     };
     const handleResult = (result: HandResult) => setHandResult(result);
+    const handleTableReset = () => {
+      setJoined(false);
+      setPrivateState(null);
+      setHandResult(null);
+    };
     s.on('table_snapshot', handleSnapshot);
     s.on('player_private_state', handlePrivate);
     s.on('error', handleError);
     s.on('hand_result', handleResult);
+    s.on('table_reset', handleTableReset);
     return () => {
       s.off('table_snapshot', handleSnapshot);
       s.off('player_private_state', handlePrivate);
       s.off('error', handleError);
       s.off('hand_result', handleResult);
+      s.off('table_reset', handleTableReset);
     };
   }, [socket]);
 
@@ -119,6 +127,14 @@ function App() {
     if (!socket.current || username.trim().length === 0) return;
     socket.current.emit('join_table', { username: username.trim() });
     setJoined(true);
+  };
+
+  const restartTable = () => {
+    if (!socket.current) return;
+    socket.current.emit('restart_table');
+    setJoined(false);
+    setPrivateState(null);
+    setHandResult(null);
   };
 
   const takeSeat = (seatIndex: SeatIndex) => {
@@ -144,20 +160,26 @@ function App() {
   const submitCombo = () => {
     if (!socket.current || !privateState) return;
     const payload: ComboSubmitMessage = {
-      cardIds: privateState.comboSelection,
+      selections: privateState.comboSelection,
     };
     socket.current.emit('combo_submit', payload);
   };
 
-  const toggleCardSelection = (cardId: string) => {
+  const toggleCardSelection = (card: Card) => {
     if (!socket.current || !privateState) return;
-    const set = new Set(privateState.comboSelection);
-    if (set.has(cardId)) {
-      set.delete(cardId);
+    const current = privateState.comboSelection ?? [];
+    const existing = current.find((sel) => sel.cardId === card.id);
+    let next: ComboSelection[];
+    if (!existing) {
+      next = [...current, { cardId: card.id, mode: 'low' }];
+    } else if (card.rank === 'A' && existing.mode === 'low') {
+      next = current.map((sel) =>
+        sel.cardId === card.id ? { ...sel, mode: 'high' } : sel,
+      );
     } else {
-      set.add(cardId);
+      next = current.filter((sel) => sel.cardId !== card.id);
     }
-    const payload: ComboUpdateMessage = { cardIds: Array.from(set) };
+    const payload: ComboUpdateMessage = { selections: next };
     socket.current.emit('combo_update', payload);
   };
 
@@ -225,8 +247,14 @@ function App() {
     );
   };
 
-  const comboAllowed = snapshot?.phase === 'combo' || snapshot?.phase === 'oxtail';
-  const selectedIds = new Set(privateState?.comboSelection ?? []);
+  const canSubmitCombo = Boolean(privateState?.actions.includes('submit_combo'));
+  const selectionMap = useMemo(() => {
+    const map = new Map<string, ComboSelection['mode']>();
+    (privateState?.comboSelection ?? []).forEach((selection) => {
+      map.set(selection.cardId, selection.mode);
+    });
+    return map;
+  }, [privateState?.comboSelection]);
 
   const actionButtons = (privateState?.actions ?? []).filter((action) => action !== 'submit_combo');
 
@@ -259,10 +287,10 @@ function App() {
               />
               <button
                 className="rounded bg-emerald-600/80 px-3 py-1 text-sm font-semibold uppercase tracking-wider text-white hover:bg-emerald-500 disabled:opacity-40"
-                onClick={joinTable}
-                disabled={!connected || username.trim().length === 0}
+                onClick={joined ? restartTable : joinTable}
+                disabled={joined ? !connected : !connected || username.trim().length === 0}
               >
-                {joined ? 'Update' : 'Join'}
+                {joined ? 'Restart' : 'Join'}
               </button>
             </div>
           </div>
@@ -310,12 +338,14 @@ function App() {
             </div>
             <div className="text-sm text-emerald-300">
               Combo total: {privateState?.comboTotal ?? 0}{' '}
-              {comboAllowed && '(must not exceed Boss)'}
+              {canSubmitCombo && '(must not exceed Boss)'}
             </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             {privateState?.hand?.map((card) => {
-              const selected = selectedIds.has(card.id);
+              const selectedMode = selectionMap.get(card.id);
+              const selected = Boolean(selectedMode);
+              const aceHigh = selectedMode === 'high';
               return (
                 <button
                   key={card.id}
@@ -323,13 +353,15 @@ function App() {
                     'rounded-xl border px-3 py-4 text-left transition',
                     selected ? 'border-yellow-400 bg-yellow-400/20' : 'border-emerald-700/60 bg-emerald-800/20',
                   )}
-                  disabled={!comboAllowed}
-                  onClick={() => toggleCardSelection(card.id)}
+                  onClick={() => toggleCardSelection(card)}
                 >
                   <div className={clsx('text-xl font-semibold', suitColors[card.suit])}>{card.rank}</div>
                   <div className={clsx('text-3xl font-bold leading-none', suitColors[card.suit])}>
                     {suitIcons[card.suit]}
                   </div>
+                  {card.rank === 'A' && selected ? (
+                    <div className="mt-1 text-xs text-yellow-300">{aceHigh ? 'Ace = 11' : 'Ace = 1'}</div>
+                  ) : null}
                 </button>
               );
             })}
@@ -345,7 +377,7 @@ function App() {
                   {action}
                 </button>
               ))}
-              {comboAllowed && privateState?.actions.includes('submit_combo') && (
+              {canSubmitCombo && (
                 <button
                   className="rounded bg-yellow-400 px-4 py-2 text-sm font-semibold uppercase tracking-wide text-black hover:bg-yellow-300"
                   onClick={submitCombo}
