@@ -64,8 +64,7 @@ export class GameEngine {
   private sidePot = 0;
   private actingSeat?: SeatIndex;
   private message = 'Waiting for players';
-  private bettingAnchorSeat?: SeatIndex;
-  private lastAggressorSeat?: SeatIndex;
+  private actedThisRound = new Set<SeatIndex>();
   private awaitingCombo = new Set<string>();
   private comboQueue: SeatIndex[] = [];
   private comboIndex = 0;
@@ -187,6 +186,10 @@ export class GameEngine {
     if (!this.actingSeat || player.seatIndex !== this.actingSeat) {
       return this.emit({ type: 'error', playerId, message: 'Not your turn' });
     }
+    if (!player.seatIndex) {
+      return this.emit({ type: 'error', playerId, message: 'Invalid seat' });
+    }
+    let resetActed = false;
     switch (message.action) {
       case 'fold':
         player.hasFolded = true;
@@ -215,10 +218,11 @@ export class GameEngine {
         this.commitAmount(player, needed);
         this.currentBet = player.betThisRound;
         this.minimumRaise = RAISE_INCREMENT;
-        this.lastAggressorSeat = player.seatIndex;
         player.lastAction = 'Raise';
+        resetActed = true;
         break;
     }
+    this.markSeatActed(player.seatIndex, resetActed);
     this.advanceTurn();
     this.broadcast();
   }
@@ -293,12 +297,11 @@ export class GameEngine {
     this.sidePot = 0;
     this.actingSeat = undefined;
     this.message = 'Waiting for players';
-    this.bettingAnchorSeat = undefined;
-    this.lastAggressorSeat = undefined;
     this.awaitingCombo.clear();
     this.comboQueue = [];
     this.comboIndex = 0;
     this.lastResult = undefined;
+    this.actedThisRound.clear();
     this.broadcast();
   }
 
@@ -377,31 +380,28 @@ export class GameEngine {
       this.commitAmount(bbPlayer, BIG_BLIND);
       bbPlayer.betThisRound = BIG_BLIND;
       this.currentBet = Math.max(this.currentBet, bbPlayer.betThisRound);
-      this.lastAggressorSeat = bbSeat;
     }
   }
 
-  private startBettingRound(referenceSeat?: SeatIndex, resetAggressor = false) {
+  private startBettingRound(referenceSeat?: SeatIndex) {
     const startSeat = referenceSeat ?? this.smallBlindSeat ?? this.getSeatLeftOfDealer();
-    this.bettingAnchorSeat = startSeat;
-    if (resetAggressor) {
-      this.lastAggressorSeat = undefined;
-    }
-    this.actingSeat = this.findNextActingSeat(startSeat);
-    for (const player of this.players.values()) {
-      player.betThisRound = player.inHand && !player.hasFolded ? player.betThisRound : 0;
+    this.actedThisRound.clear();
+    this.actingSeat = this.findNextActingSeat(startSeat, true);
+    if (!this.actingSeat) {
+      this.finishBettingRound();
+      return;
     }
     this.updateActionMessage();
   }
 
   private advanceTurn() {
     if (!this.actingSeat) return;
-    const currentSeat = this.actingSeat;
     if (this.isBettingRoundComplete()) {
       this.finishBettingRound();
       return;
     }
-    this.actingSeat = this.findNextActingSeat(this.getNextSeatIndex(currentSeat));
+    const currentSeat = this.actingSeat;
+    this.actingSeat = this.findNextActingSeat(currentSeat, false);
     if (!this.actingSeat) {
       this.finishBettingRound();
     } else {
@@ -412,11 +412,33 @@ export class GameEngine {
   private isBettingRoundComplete() {
     const active = this.activePlayers();
     if (active.length <= 1) return true;
+    if (!this.haveAllRequiredPlayersActed()) return false;
     return active.every((p) => p.betThisRound === this.currentBet || p.stack === 0);
+  }
+
+  private haveAllRequiredPlayersActed() {
+    for (const player of this.players.values()) {
+      if (!player.inHand || player.hasFolded) continue;
+      if (!player.seatIndex) continue;
+      if (player.stack === 0) continue;
+      if (!this.actedThisRound.has(player.seatIndex)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private markSeatActed(seat: SeatIndex | undefined, reset = false) {
+    if (!seat) return;
+    if (reset) {
+      this.actedThisRound.clear();
+    }
+    this.actedThisRound.add(seat);
   }
 
   private finishBettingRound() {
     this.actingSeat = undefined;
+    this.actedThisRound.clear();
     for (const player of this.players.values()) {
       player.betThisRound = 0;
     }
@@ -430,12 +452,12 @@ export class GameEngine {
       case 'rush':
         this.phase = 'charge';
         this.bossRevealedCount = 4;
-        this.startBettingRound(this.smallBlindSeat, true);
+        this.startBettingRound(this.smallBlindSeat);
         break;
       case 'charge':
         this.phase = 'stomp';
         this.bossRevealedCount = 5;
-        this.startBettingRound(this.smallBlindSeat, true);
+        this.startBettingRound(this.smallBlindSeat);
         break;
       case 'stomp':
         this.enterComboPhase();
@@ -535,7 +557,7 @@ export class GameEngine {
     const newCard = this.drawCards(1)[0];
     this.bossCards.push(newCard);
     this.bossRevealedCount += 1;
-    this.startBettingRound(this.smallBlindSeat, true);
+    this.startBettingRound(this.smallBlindSeat);
   }
 
   private splitPot(players: EnginePlayer[]) {
@@ -631,42 +653,36 @@ export class GameEngine {
   }
 
   private getNextOccupiedSeat(start: SeatIndex): SeatIndex | undefined {
-    for (let i = 1; i <= SEAT_COUNT; i += 1) {
-      const seat = ((start - 1 + i) % SEAT_COUNT) + 1;
-      const playerId = this.seats[seat - 1];
-      if (playerId) {
-        const player = this.players.get(playerId);
-        if (player && player.seatIndex === seat) {
-          return seat as SeatIndex;
-        }
-      }
-    }
-    return undefined;
+    return this.findSeatInDirection(start, (player) => Boolean(player), false);
   }
 
-  private findNextActingSeat(start: SeatIndex | undefined): SeatIndex | undefined {
-    if (!start) return undefined;
-    let seat = start;
-    for (let i = 0; i < SEAT_COUNT; i += 1) {
-      const playerId = this.seats[seat - 1];
-      if (playerId) {
-        const player = this.players.get(playerId);
-        if (player && player.inHand && !player.hasFolded && player.stack >= 0) {
-          if (player.betThisRound < this.currentBet || this.currentBet === 0 || this.lastAggressorSeat === seat) {
-            return seat;
-          }
-          if (this.currentBet === 0) {
-            return seat;
-          }
-        }
-      }
-      seat = this.getNextSeatIndex(seat);
-    }
-    return undefined;
+  private findNextActingSeat(start: SeatIndex | undefined, includeStart: boolean): SeatIndex | undefined {
+    return this.findSeatInDirection(
+      start,
+      (player) => Boolean(player && player.inHand && !player.hasFolded && player.stack > 0),
+      includeStart,
+    );
   }
 
   private getNextSeatIndex(seat: SeatIndex): SeatIndex {
     return ((seat % SEAT_COUNT) + 1) as SeatIndex;
+  }
+
+  private findSeatInDirection(
+    start: SeatIndex | undefined,
+    predicate: (player: EnginePlayer | undefined) => boolean,
+    includeStart = false,
+  ): SeatIndex | undefined {
+    if (!start) return undefined;
+    let seat = includeStart ? start : this.getNextSeatIndex(start);
+    for (let i = 0; i < SEAT_COUNT; i += 1) {
+      const player = this.getPlayerBySeat(seat);
+      if (predicate(player)) {
+        return seat;
+      }
+      seat = this.getNextSeatIndex(seat);
+    }
+    return undefined;
   }
 
   private commitAmount(player: EnginePlayer, amount: number) {
@@ -751,10 +767,17 @@ export class GameEngine {
   }
 
   private countSuitMatches(cards: Card[]) {
-    const bossSuits = this.bossCards.slice(0, this.bossRevealedCount).map((card) => card.suit);
+    const bossCounts = new Map<Card['suit'], number>();
+    for (const card of this.bossCards.slice(0, this.bossRevealedCount)) {
+      bossCounts.set(card.suit, (bossCounts.get(card.suit) ?? 0) + 1);
+    }
     let matches = 0;
     for (const card of cards) {
-      if (bossSuits.includes(card.suit)) matches += 1;
+      const remaining = bossCounts.get(card.suit) ?? 0;
+      if (remaining > 0) {
+        matches += 1;
+        bossCounts.set(card.suit, remaining - 1);
+      }
     }
     return matches;
   }
@@ -763,10 +786,12 @@ export class GameEngine {
     switch (rank) {
       case 'A':
         return 1;
-      case 'K':
-      case 'Q':
       case 'J':
-        return 10;
+        return 11;
+      case 'Q':
+        return 12;
+      case 'K':
+        return 13;
       default:
         return parseInt(rank, 10);
     }

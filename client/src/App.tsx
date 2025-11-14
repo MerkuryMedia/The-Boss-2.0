@@ -15,14 +15,32 @@ import type {
 import tableImg from './assets/table.svg';
 import bossImg from './assets/boss-v2.png';
 
-const seatLayouts: Record<SeatIndex, { top: string; left: string }> = {
-  1: { top: '5%', left: '18%' },
-  2: { top: '35%', left: '7%' },
-  3: { top: '70%', left: '20%' },
-  4: { top: '82%', left: '50%' },
-  5: { top: '70%', left: '78%' },
-  6: { top: '35%', left: '88%' },
+const buildSeatLayouts = () => {
+  const base: Record<1 | 2 | 3, { top: number; left: number }> = {
+    1: { top: 7, left: 20 },
+    2: { top: 34, left: 8 },
+    3: { top: 69, left: 22 },
+  };
+  const mirror = (coords: { top: number; left: number }) => ({
+    top: coords.top,
+    left: 100 - coords.left,
+  });
+  const numericLayouts: Record<SeatIndex, { top: number; left: number }> = {
+    1: base[1],
+    2: base[2],
+    3: base[3],
+    4: mirror(base[3]),
+    5: mirror(base[2]),
+    6: mirror(base[1]),
+  };
+  return Object.entries(numericLayouts).reduce((layouts, [seat, coords]) => {
+    const seatIndex = Number(seat) as SeatIndex;
+    layouts[seatIndex] = { top: `${coords.top}%`, left: `${coords.left}%` };
+    return layouts;
+  }, {} as Record<SeatIndex, { top: string; left: string }>);
 };
+
+const seatLayouts = buildSeatLayouts();
 
 const phaseLabels: Record<string, string> = {
   waiting: 'Waiting',
@@ -255,10 +273,19 @@ function App() {
     });
     return map;
   }, [privateState?.comboSelection]);
-
   const actionButtons = (privateState?.actions ?? []).filter((action) => action !== 'submit_combo');
 
   const bossTotal = snapshot ? snapshot.bossCards.reduce((sum, card) => sum + getBossValue(card), 0) : 0;
+  const comboSuitMatches = useMemo(() => {
+    if (!privateState?.hand) return 0;
+    const selectedCards: Card[] = [];
+    const handLookup = new Map(privateState.hand.map((card) => [card.id, card] as const));
+    (privateState.comboSelection ?? []).forEach((selection) => {
+      const card = handLookup.get(selection.cardId);
+      if (card) selectedCards.push(card);
+    });
+    return countSuitMatches(selectedCards, snapshot?.bossCards ?? []);
+  }, [privateState?.comboSelection, privateState?.hand, snapshot?.bossCards]);
 
   return (
     <div className="poker-background text-emerald-50">
@@ -299,15 +326,20 @@ function App() {
         <div className="relative mt-6 rounded-[36px] border border-emerald-800/60 bg-gradient-to-b from-[#02140c] to-[#021f12] p-4 shadow-2xl shadow-black/70">
           <div className="relative mx-auto flex h-[520px] w-full max-w-4xl items-center justify-center">
             <img src={tableImg} alt="Poker table" className="table-shadow w-full rounded-[60px] object-contain" />
-            <img
-              src={bossImg}
-              alt="The Boss"
-              className="pointer-events-none absolute top-4 left-1/2 w-48 -translate-x-1/2 drop-shadow-[0_12px_20px_rgba(0,0,0,0.8)]"
-            />
-            <div className="absolute top-6 left-1/2 flex -translate-x-1/2 gap-2">
-              {snapshot?.bossCards.map((card) => (
-                <CardView key={card.id} card={card} />
-              ))}
+            <div className="pointer-events-none absolute top-4 left-1/2 flex -translate-x-1/2 flex-col items-center gap-3 text-center">
+              <div className="font-headline text-3xl font-bold uppercase tracking-wide text-yellow-300 drop-shadow-[0_6px_12px_rgba(0,0,0,0.7)]">
+                Boss Total: {bossTotal}
+              </div>
+              <img
+                src={bossImg}
+                alt="The Boss"
+                className="w-48 drop-shadow-[0_12px_20px_rgba(0,0,0,0.8)]"
+              />
+              <div className="flex gap-2">
+                {snapshot?.bossCards.map((card) => (
+                  <CardView key={card.id} card={card} />
+                ))}
+              </div>
             </div>
             {([1, 2, 3, 4, 5, 6] as SeatIndex[]).map((seatIndex) => renderSeat(seatIndex))}
             <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 gap-6 text-center text-sm uppercase text-emerald-200">
@@ -329,16 +361,15 @@ function App() {
         </div>
 
         <section className="mt-6 rounded-2xl border border-emerald-800/60 bg-black/70 p-5 shadow-xl shadow-black/70">
-          <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center justify-start gap-4 text-sm text-emerald-300">
             <div>
-              <h2 className="text-lg font-semibold text-emerald-200">Your Hand</h2>
-              <p className="text-sm text-emerald-400">
-                Select cards to build combo. Boss total: {bossTotal}
-              </p>
-            </div>
-            <div className="text-sm text-emerald-300">
-              Combo total: {privateState?.comboTotal ?? 0}{' '}
-              {canSubmitCombo && '(must not exceed Boss)'}
+              <div>
+                Combo total: {privateState?.comboTotal ?? 0}{' '}
+                {canSubmitCombo && '(must not exceed Boss)'}
+              </div>
+              <div className="text-xs text-emerald-400">
+                Suit matches with Boss: {comboSuitMatches}
+              </div>
             </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -419,9 +450,27 @@ function App() {
   );
 }
 
+const countSuitMatches = (cards: Card[], bossCards: Card[]) => {
+  const bossCounts = new Map<Card['suit'], number>();
+  bossCards.forEach((card) => {
+    bossCounts.set(card.suit, (bossCounts.get(card.suit) ?? 0) + 1);
+  });
+  let matches = 0;
+  for (const card of cards) {
+    const available = bossCounts.get(card.suit) ?? 0;
+    if (available > 0) {
+      matches += 1;
+      bossCounts.set(card.suit, available - 1);
+    }
+  }
+  return matches;
+};
+
 const getBossValue = (card: Card) => {
   if (card.rank === 'A') return 1;
-  if (['K', 'Q', 'J'].includes(card.rank)) return 10;
+  if (card.rank === 'J') return 11;
+  if (card.rank === 'Q') return 12;
+  if (card.rank === 'K') return 13;
   return Number(card.rank);
 };
 
