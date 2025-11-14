@@ -13,6 +13,7 @@ import type {
   SeatIndex,
 } from '@shared/types';
 import tableImg from './assets/table.svg';
+import bossImg from './assets/boss-v2.png';
 
 const seatLayouts: Record<SeatIndex, { top: string; left: string }> = {
   1: { top: '5%', left: '18%' },
