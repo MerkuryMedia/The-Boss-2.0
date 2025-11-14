@@ -54,20 +54,11 @@ const phaseLabels: Record<string, string> = {
 };
 
 const suitIcons: Record<Card['suit'], string> = {
-  hearts: '♥',
-  diamonds: '♦',
-  clubs: '♣',
-  spades: '♠',
+  hearts: '\u2665',
+  diamonds: '\u2666',
+  clubs: '\u2663',
+  spades: '\u2660',
 };
-
-const suitColors: Record<Card['suit'], string> = {
-  hearts: 'text-red-500',
-  diamonds: 'text-red-500',
-  clubs: 'text-emerald-200',
-  spades: 'text-emerald-200',
-};
-
-const cardLabel = (card: Card) => `${card.rank}${suitIcons[card.suit]}`;
 
 const resolveServerUrl = () => {
   if (import.meta.env.VITE_SERVER_URL) {
@@ -239,7 +230,7 @@ function App() {
             {occupant.comboRevealed && occupant.comboRevealed.length > 0 && (
               <div className="flex justify-center gap-1">
                 {occupant.comboRevealed.map((card) => (
-                  <CardView key={card.id} card={card} small />
+                  <PlayingCard key={card.id} rank={card.rank} suit={card.suit} small />
                 ))}
               </div>
             )}
@@ -337,7 +328,7 @@ function App() {
               />
               <div className="flex gap-2">
                 {snapshot?.bossCards.map((card) => (
-                  <CardView key={card.id} card={card} />
+                  <PlayingCard key={card.id} rank={card.rank} suit={card.suit} small />
                 ))}
               </div>
             </div>
@@ -381,15 +372,19 @@ function App() {
                 <button
                   key={card.id}
                   className={clsx(
-                    'rounded-xl border px-3 py-4 text-left transition',
-                    selected ? 'border-yellow-400 bg-yellow-400/20' : 'border-emerald-700/60 bg-emerald-800/20',
+                    'flex flex-col items-center gap-2 rounded-xl border px-3 py-3 text-center transition',
+                    selected ? 'border-yellow-400 bg-yellow-400/15' : 'border-emerald-700/60 bg-emerald-900/20',
                   )}
                   onClick={() => toggleCardSelection(card)}
                 >
-                  <div className={clsx('text-xl font-semibold', suitColors[card.suit])}>{card.rank}</div>
-                  <div className={clsx('text-3xl font-bold leading-none', suitColors[card.suit])}>
-                    {suitIcons[card.suit]}
-                  </div>
+                  <PlayingCard
+                    rank={card.rank}
+                    suit={card.suit}
+                    className={clsx(
+                      selected && 'ring-2 ring-yellow-300 ring-offset-2 ring-offset-black/40',
+                      'transition-all',
+                    )}
+                  />
                   {card.rank === 'A' && selected ? (
                     <div className="mt-1 text-xs text-yellow-300">{aceHigh ? 'Ace = 11' : 'Ace = 1'}</div>
                   ) : null}
@@ -474,18 +469,42 @@ const getBossValue = (card: Card) => {
   return Number(card.rank);
 };
 
-function CardView({ card, small = false }: { card: Card; small?: boolean }) {
+function PlayingCard({
+  rank,
+  suit,
+  small = false,
+  className,
+}: {
+  rank: Card['rank'];
+  suit: Card['suit'];
+  small?: boolean;
+  className?: string;
+}) {
+  const symbol = suitIcons[suit];
+  const isRed = suit === 'hearts' || suit === 'diamonds';
+  const colorClass = isRed ? 'text-rose-600' : 'text-slate-900';
+  const sizeClass = small ? 'w-12' : 'w-16';
   return (
     <div
       className={clsx(
-        'rounded-lg border border-white/30 bg-black/60 px-2 py-3 text-center text-white shadow-lg',
-        small ? 'text-xs' : 'text-base',
+        'relative flex items-center justify-center rounded-lg border border-slate-600 bg-slate-50 shadow-md',
+        sizeClass,
+        className,
       )}
+      style={{ aspectRatio: '3 / 5' }}
     >
-      <div className={clsx('font-semibold', suitColors[card.suit])}>{card.rank}</div>
-      <div className={clsx('font-bold', suitColors[card.suit])}>{suitIcons[card.suit]}</div>
+      <div className={clsx('absolute left-2 top-2 text-xs font-bold leading-tight', colorClass)}>
+        <div>{rank}</div>
+        <div>{symbol}</div>
+      </div>
+      <div className={clsx('absolute right-2 bottom-2 text-xs font-bold leading-tight rotate-180', colorClass)}>
+        <div>{rank}</div>
+        <div>{symbol}</div>
+      </div>
+      <div className={clsx('text-3xl font-semibold', colorClass)}>{symbol}</div>
     </div>
   );
 }
 
 export default App;
+
