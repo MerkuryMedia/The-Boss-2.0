@@ -1,0 +1,26 @@
+{
+  "name": "the-boss",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev:server": "ts-node-dev --respawn --transpile-only src/server/index.ts",
+    "dev:client": "npm --prefix client run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "build:client": "npm --prefix client run build",
+    "build:server": "tsc -p tsconfig.json",
+    "build": "npm run build:client && npm run build:server",
+    "start": "node dist/server/index.js"
+  },
+  "dependencies": {
+    "concurrently": "^8.2.2",
+    "fastify": "^4.25.2",
+    "@fastify/static": "^6.11.2",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.4.5"
+  }
+}

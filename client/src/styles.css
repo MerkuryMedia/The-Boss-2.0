@@ -1,0 +1,18 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600&family=Poppins:wght@400;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Poppins', sans-serif;
+}
+
+.poker-background {
+  background: radial-gradient(circle at top, rgba(7, 63, 33, 0.9), #032216 70%);
+  min-height: 100vh;
+}
+
+.table-shadow {
+  filter: drop-shadow(0 20px 30px rgba(0, 0, 0, 0.6));
+}
