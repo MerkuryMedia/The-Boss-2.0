@@ -12,7 +12,6 @@ import type {
   TableSnapshot,
   SeatIndex,
 } from '@shared/types';
-import bossImg from './assets/boss.svg';
 import tableImg from './assets/table.svg';
 
 const seatLayouts: Record<SeatIndex, { top: string; left: string }> = {

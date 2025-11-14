@@ -55,6 +55,7 @@ export class GameEngine {
   private bossCards: Card[] = [];
   private bossRevealedCount = 0;
   private bossVisible = false;
+  private smallBlindSeat?: SeatIndex;
   private phase: Phase = 'waiting';
   private dealerSeat?: SeatIndex;
   private currentBet = 0;
@@ -66,6 +67,8 @@ export class GameEngine {
   private bettingAnchorSeat?: SeatIndex;
   private lastAggressorSeat?: SeatIndex;
   private awaitingCombo = new Set<string>();
+  private comboQueue: SeatIndex[] = [];
+  private comboIndex = 0;
   private lastResult?: HandResult;
 
   private broadcastCallback?: (event: EngineEvent) => void;
@@ -137,11 +140,25 @@ export class GameEngine {
         this.dealerSeat = this.findNextDealerSeat(player.seatIndex);
       }
       this.seats[player.seatIndex - 1] = null;
-      player.seatIndex = undefined;
     }
     if (player.inHand) {
       player.hasFolded = true;
       player.inHand = false;
+    }
+    const leftSeat = player.seatIndex;
+    player.seatIndex = undefined;
+    if (this.phase === 'combo' && this.awaitingCombo.delete(player.id)) {
+      if (leftSeat === this.actingSeat) {
+        if (this.awaitingCombo.size === 0) {
+          this.actingSeat = undefined;
+          this.updateActionMessage();
+          this.evaluateCombos();
+        } else if (!this.setNextComboActor(this.comboIndex + 1)) {
+          this.evaluateCombos();
+        }
+      }
+    } else if (leftSeat && leftSeat === this.actingSeat) {
+      this.advanceTurn();
     }
     this.broadcast();
   }
@@ -222,6 +239,9 @@ export class GameEngine {
       return this.emit({ type: 'error', playerId, message: 'Not combo phase' });
     }
     if (!this.awaitingCombo.has(playerId)) return;
+    if (!player.seatIndex || player.seatIndex !== this.actingSeat) {
+      return this.emit({ type: 'error', playerId, message: 'Not your turn' });
+    }
     const selections = this.sanitizeSelections(player, message.selections);
     const total = this.computeComboTotal(player, selections);
     const bossTotal = this.computeBossTotal();
@@ -232,6 +252,10 @@ export class GameEngine {
     player.comboRevealed = selections.map((selection) => this.findCardInHand(player, selection.cardId)!);
     this.awaitingCombo.delete(playerId);
     if (this.awaitingCombo.size === 0) {
+      this.actingSeat = undefined;
+      this.updateActionMessage();
+      this.evaluateCombos();
+    } else if (!this.setNextComboActor(this.comboIndex + 1)) {
       this.evaluateCombos();
     } else {
       this.broadcast();
@@ -260,6 +284,7 @@ export class GameEngine {
     this.bossCards = [];
     this.bossRevealedCount = 0;
     this.bossVisible = false;
+    this.smallBlindSeat = undefined;
     this.phase = 'waiting';
     this.dealerSeat = undefined;
     this.currentBet = 0;
@@ -271,6 +296,8 @@ export class GameEngine {
     this.bettingAnchorSeat = undefined;
     this.lastAggressorSeat = undefined;
     this.awaitingCombo.clear();
+    this.comboQueue = [];
+    this.comboIndex = 0;
     this.lastResult = undefined;
     this.broadcast();
   }
@@ -291,7 +318,7 @@ export class GameEngine {
     this.dealHands(players);
     this.bossVisible = true;
     this.assignBlinds(players);
-    this.startBettingRound(this.getSeatLeftOfDealer());
+    this.startBettingRound(this.smallBlindSeat);
   }
 
   private resetPlayersForHand(players: EnginePlayer[]) {
@@ -336,6 +363,7 @@ export class GameEngine {
       sbSeat = this.getNextOccupiedSeat(this.dealerSeat!)!;
       bbSeat = this.getNextOccupiedSeat(sbSeat)!;
     }
+    this.smallBlindSeat = sbSeat;
     const sbPlayer = this.getPlayerBySeat(sbSeat);
     const bbPlayer = this.getPlayerBySeat(bbSeat);
     if (sbPlayer) {
@@ -353,13 +381,17 @@ export class GameEngine {
     }
   }
 
-  private startBettingRound(startSeat: SeatIndex) {
+  private startBettingRound(referenceSeat?: SeatIndex, resetAggressor = false) {
+    const startSeat = referenceSeat ?? this.smallBlindSeat ?? this.getSeatLeftOfDealer();
     this.bettingAnchorSeat = startSeat;
+    if (resetAggressor) {
+      this.lastAggressorSeat = undefined;
+    }
     this.actingSeat = this.findNextActingSeat(startSeat);
     for (const player of this.players.values()) {
       player.betThisRound = player.inHand && !player.hasFolded ? player.betThisRound : 0;
     }
-    this.message = this.phase === 'rush' ? 'The Rush' : this.phase === 'charge' ? 'The Charge' : this.phase === 'stomp' ? 'The Stomp' : this.phase === 'oxtail' ? 'Oxtail Betting' : this.message;
+    this.updateActionMessage();
   }
 
   private advanceTurn() {
@@ -372,6 +404,8 @@ export class GameEngine {
     this.actingSeat = this.findNextActingSeat(this.getNextSeatIndex(currentSeat));
     if (!this.actingSeat) {
       this.finishBettingRound();
+    } else {
+      this.updateActionMessage();
     }
   }
 
@@ -396,12 +430,12 @@ export class GameEngine {
       case 'rush':
         this.phase = 'charge';
         this.bossRevealedCount = 4;
-        this.startBettingRound(this.getSeatLeftOfDealer());
+        this.startBettingRound(this.smallBlindSeat, true);
         break;
       case 'charge':
         this.phase = 'stomp';
         this.bossRevealedCount = 5;
-        this.startBettingRound(this.getSeatLeftOfDealer());
+        this.startBettingRound(this.smallBlindSeat, true);
         break;
       case 'stomp':
         this.enterComboPhase();
@@ -415,19 +449,27 @@ export class GameEngine {
   private enterComboPhase(oxtail = false) {
     this.phase = 'combo';
     this.awaitingCombo.clear();
-    for (const player of this.activePlayers()) {
+    const active = this.activePlayers();
+    for (const player of active) {
       this.awaitingCombo.add(player.id);
       if (!oxtail) {
         player.comboSelection = [];
         player.comboRevealed = undefined;
       }
     }
-    this.message = oxtail ? 'Rebuild combos' : 'Submit combos';
+    this.comboQueue = this.buildComboOrder();
+    this.comboIndex = 0;
     if (this.awaitingCombo.size === 0) {
+      this.actingSeat = undefined;
+      this.updateActionMessage();
       this.evaluateCombos();
-    } else {
-      this.broadcast();
+      return;
     }
+    if (!this.setNextComboActor(0)) {
+      this.evaluateCombos();
+      return;
+    }
+    this.broadcast();
   }
 
   private resolveHandByFold() {
@@ -493,8 +535,7 @@ export class GameEngine {
     const newCard = this.drawCards(1)[0];
     this.bossCards.push(newCard);
     this.bossRevealedCount += 1;
-    this.message = 'Oxtail!';
-    this.startBettingRound(this.getSeatLeftOfDealer());
+    this.startBettingRound(this.smallBlindSeat, true);
   }
 
   private splitPot(players: EnginePlayer[]) {
@@ -530,6 +571,9 @@ export class GameEngine {
     this.bossVisible = false;
     this.actingSeat = undefined;
     this.message = 'Waiting for dealer';
+    this.awaitingCombo.clear();
+    this.comboQueue = [];
+    this.comboIndex = 0;
     this.rotateDealer();
     for (const player of this.players.values()) {
       player.inHand = false;
@@ -582,7 +626,8 @@ export class GameEngine {
   }
 
   private getSeatLeftOfDealer(): SeatIndex {
-    return this.getNextOccupiedSeat(this.dealerSeat!) || this.dealerSeat!;
+    if (!this.dealerSeat) return 1 as SeatIndex;
+    return this.getNextOccupiedSeat(this.dealerSeat) || this.dealerSeat;
   }
 
   private getNextOccupiedSeat(start: SeatIndex): SeatIndex | undefined {
@@ -732,6 +777,67 @@ export class GameEngine {
     return this.getCardValue(rank);
   }
 
+  private buildComboOrder() {
+    const order: SeatIndex[] = [];
+    const startSeat = this.smallBlindSeat ?? this.getSeatLeftOfDealer();
+    let seat = startSeat;
+    for (let i = 0; i < SEAT_COUNT; i += 1) {
+      const player = this.getPlayerBySeat(seat);
+      if (player && player.inHand && !player.hasFolded) {
+        order.push(seat);
+      }
+      seat = this.getNextSeatIndex(seat);
+    }
+    return order;
+  }
+
+  private setNextComboActor(startIndex: number) {
+    for (let idx = startIndex; idx < this.comboQueue.length; idx += 1) {
+      const seat = this.comboQueue[idx];
+      const player = this.getPlayerBySeat(seat);
+      if (player && this.awaitingCombo.has(player.id) && player.inHand && !player.hasFolded) {
+        this.comboIndex = idx;
+        this.actingSeat = seat;
+        this.updateActionMessage();
+        return true;
+      }
+    }
+    this.comboIndex = this.comboQueue.length;
+    this.actingSeat = undefined;
+    this.updateActionMessage();
+    return false;
+  }
+
+  private getPhaseLabel() {
+    switch (this.phase) {
+      case 'rush':
+        return 'The Rush';
+      case 'charge':
+        return 'The Charge';
+      case 'stomp':
+        return 'The Stomp';
+      case 'combo':
+        return 'Submit combos';
+      case 'oxtail':
+        return 'Oxtail betting';
+      case 'waiting':
+      default:
+        return 'Waiting for dealer';
+    }
+  }
+
+  private updateActionMessage() {
+    if (this.actingSeat) {
+      const player = this.getPlayerBySeat(this.actingSeat);
+      if (player) {
+        const comboSuffix = this.phase === 'combo' ? ' – Submit combo' : '';
+        this.message = `Action to ${player.username}${comboSuffix}`;
+        return;
+      }
+    }
+    this.message = this.getPhaseLabel();
+  }
+
   private getEligibleSeatedPlayers() {
     const list: EnginePlayer[] = [];
     for (const seat of this.seats) {
@@ -778,7 +884,11 @@ export class GameEngine {
 
   private getAvailableActions(player: EnginePlayer): PlayerAction[] {
     if (!player.inHand || player.hasFolded) return [];
-    if (this.phase === 'combo' && this.awaitingCombo.has(player.id)) {
+    if (
+      this.phase === 'combo' &&
+      this.awaitingCombo.has(player.id) &&
+      player.seatIndex === this.actingSeat
+    ) {
       return ['submit_combo'];
     }
     if (!this.actingSeat || player.seatIndex !== this.actingSeat) return [];
