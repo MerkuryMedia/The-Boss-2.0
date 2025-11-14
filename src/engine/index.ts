@@ -583,6 +583,7 @@ export class GameEngine {
     this.bossCards.push(newCard);
     this.bossRevealedCount += 1;
     this.startBettingRound(this.smallBlindSeat);
+    this.broadcast();
   }
 
   private splitPot(players: EnginePlayer[]) {
