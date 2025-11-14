@@ -14,6 +14,8 @@ import type {
 } from '@shared/types';
 import tableImg from './assets/table.svg';
 import bossImg from './assets/boss-v2.png';
+import bossStomp1 from './assets/bossStomp1.png';
+import bossStomp2 from './assets/bossStomp2.png';
 
 const buildSeatLayouts = () => {
   const base: Record<1 | 2 | 3, { top: number; left: number }> = {
@@ -132,6 +134,12 @@ function App() {
       s.off('table_reset', handleTableReset);
     };
   }, [socket]);
+
+  useEffect(() => {
+    if (snapshot?.phase === 'rush' && handResult) {
+      setHandResult(null);
+    }
+  }, [snapshot?.phase, handResult]);
 
   const joinTable = () => {
     if (!socket.current || username.trim().length === 0) return;
@@ -317,13 +325,57 @@ function App() {
     });
   };
 
+  const comboWinPhrases: Record<number, string> = {
+    1: 'wins with a Bullseye',
+    2: 'wins with The Horns',
+    3: 'wins with a Tackle',
+    4: 'wins with a Hoof',
+    5: 'wins with a Matador',
+    6: 'wins with a Scramble',
+    7: 'wins with a Flag',
+  };
+
+  const formatPot = (amount: number) => `$${amount.toLocaleString()}`;
+
+  const resultMessage = useMemo(() => {
+    if (!handResult) return null;
+    const primaryWinner = handResult.winners[0];
+    if (!primaryWinner) return null;
+    const totalPot = handResult.winners.reduce((sum, winner) => sum + winner.amount, 0);
+    const potText = formatPot(totalPot);
+    switch (handResult.winType) {
+      case 'fold':
+        return `${primaryWinner.username} wins ${potText} pot with a rake`;
+      case 'closest':
+        return `${primaryWinner.username} wins ${potText} pot with a Nosehair`;
+      case 'oxtail':
+        return `${primaryWinner.username} wins ${potText} pot and grabs the Oxtail`;
+      case 'exact': {
+        const phrase = comboWinPhrases[handResult.comboCardCount ?? 0];
+        if (phrase) {
+          return `${primaryWinner.username} wins ${potText} pot ${phrase.replace('wins ', 'with ')}`;
+        }
+        return `${primaryWinner.username} wins ${potText} pot`;
+      }
+      case 'split':
+        return `${handResult.description} (${potText} total)`;
+      default:
+        return handResult.description
+          ? `${handResult.description} (${potText} pot)`
+          : `${primaryWinner.username} wins ${potText} pot`;
+    }
+  }, [handResult]);
+
+  const displayMessage = resultMessage ?? snapshot?.message ?? '';
+
   return (
     <div className="poker-background text-emerald-50">
       <div className="mx-auto max-w-6xl px-4 py-6">
         <header className="flex flex-col gap-4 rounded-2xl border border-emerald-600/40 bg-black/60 px-4 py-4 shadow-lg shadow-black/60 md:flex-row md:items-center md:justify-between">
           <div>
-            <h1 className="font-headline text-3xl tracking-wide text-emerald-100">THE BOSS</h1>
-            <p className="text-sm text-emerald-300">High stakes rush, charge, stomp.</p>
+            <h1 className="font-headline text-3xl tracking-wide text-transparent bg-gradient-to-r from-yellow-300 via-amber-200 to-yellow-400 bg-clip-text drop-shadow-[0_2px_6px_rgba(255,215,0,0.4)]">
+              THE BOSS
+            </h1>
           </div>
           <div className="flex flex-wrap items-center gap-4 text-sm">
             <div className="rounded-full border border-emerald-500/40 px-3 py-1">
@@ -356,15 +408,11 @@ function App() {
         <div className="relative mt-6 rounded-[36px] border border-emerald-800/60 bg-gradient-to-b from-[#02140c] to-[#021f12] p-4 shadow-2xl shadow-black/70">
           <div className="relative mx-auto flex h-[520px] w-full max-w-4xl items-center justify-center">
             <img src={tableImg} alt="Poker table" className="table-shadow w-full rounded-[60px] object-contain" />
-            <div className="pointer-events-none absolute top-4 left-1/2 flex -translate-x-1/2 flex-col items-center gap-3 text-center">
-              <div className="font-headline text-3xl font-bold uppercase tracking-wide text-yellow-300 drop-shadow-[0_6px_12px_rgba(0,0,0,0.7)]">
-                Boss Total: {bossTotal}
+            <div className="pointer-events-none absolute top-4 left-1/2 flex -translate-x-1/2 flex-col items-center gap-2 text-center">
+              <BossImage phase={snapshot?.phase} />
+              <div className="font-headline text-2xl font-bold tracking-wide text-yellow-200 drop-shadow-[0_6px_12px_rgba(0,0,0,0.7)]">
+                {bossTotal}
               </div>
-              <img
-                src={bossImg}
-                alt="The Boss"
-                className="w-48 drop-shadow-[0_12px_20px_rgba(0,0,0,0.8)]"
-              />
               <div className="flex gap-2">
                 {snapshot?.bossCards.map((card) => (
                   <PlayingCard key={card.id} rank={card.rank} suit={card.suit} small />
@@ -372,10 +420,8 @@ function App() {
               </div>
             </div>
             {([1, 2, 3, 4, 5, 6] as SeatIndex[]).map((seatIndex) => renderSeat(seatIndex))}
-            <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 gap-6 text-center text-sm uppercase text-emerald-200">
-              <div>Pot: ${snapshot?.pot ?? 0}</div>
-              {snapshot?.sidePot ? <div>Side Pot: ${snapshot.sidePot}</div> : null}
-              <div>Message: {snapshot?.message ?? ''}</div>
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-center text-2xl font-bold text-white">
+              Pot: ${snapshot?.pot ?? 0}
             </div>
           </div>
           {canStartHand && (
@@ -390,19 +436,28 @@ function App() {
           )}
         </div>
 
+        {displayMessage ? (
+          <div className="mt-6 rounded-2xl border border-emerald-600/50 bg-emerald-900/70 px-4 py-3 text-center text-sm text-emerald-50">
+            {displayMessage}
+          </div>
+        ) : null}
+
         <section className="mt-6 rounded-2xl border border-emerald-800/60 bg-black/70 p-5 shadow-xl shadow-black/70">
-          <div className="flex flex-wrap items-center justify-start gap-4 text-sm text-emerald-300">
+          <div className="flex flex-wrap items-center justify-between gap-4 text-sm text-emerald-300">
             <div>
               <div>
-                Combo total: {privateState?.comboTotal ?? 0}{' '}
+                Combo: {privateState?.comboTotal ?? 0}{' '}
                 {canSubmitCombo && '(must not exceed Boss)'}
               </div>
               <div className="text-xs text-emerald-400">
-                Suit matches with Boss: {comboSuitMatches}
+                Suit Matches: {comboSuitMatches}
               </div>
             </div>
+            <div className="text-sm text-emerald-300">
+              Current bet: ${snapshot?.currentBet ?? 0} | Minimum raise: ${snapshot?.minimumRaise ?? 0}
+            </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap justify-center gap-2">
             {privateState?.hand?.map((card) => {
               const selectedMode = selectionMap.get(card.id);
               const selected = Boolean(selectedMode);
@@ -479,9 +534,6 @@ function App() {
                 </button>
               )}
             </div>
-            <div className="text-sm text-emerald-300">
-              Current bet: ${snapshot?.currentBet ?? 0} | Minimum raise: ${snapshot?.minimumRaise ?? 0}
-            </div>
           </div>
         </section>
 
@@ -491,22 +543,6 @@ function App() {
           </div>
         )}
 
-        {handResult && (
-          <div className="mt-4 rounded-2xl border border-emerald-600/50 bg-emerald-900/70 px-4 py-3 text-center text-sm text-emerald-50">
-            <div className="font-semibold">Hand Result</div>
-            <div>{handResult.description}</div>
-            <div className="mt-1">
-              Winners:{' '}
-              {handResult.winners.map((winner) => `${winner.username} +$${winner.amount}`).join(', ')}
-            </div>
-            <button
-              className="mt-2 rounded-full border border-emerald-400/60 px-3 py-1 text-xs uppercase tracking-wide text-emerald-200"
-              onClick={() => setHandResult(null)}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -527,6 +563,32 @@ const countSuitMatches = (cards: Card[], bossCards: Card[]) => {
   }
   return matches;
 };
+
+function BossImage({ phase }: { phase?: string }) {
+  const [frame, setFrame] = useState(bossImg);
+
+  useEffect(() => {
+    if (phase !== 'stomp') {
+      setFrame(bossImg);
+      return;
+    }
+    setFrame(bossStomp1);
+    const second = window.setTimeout(() => setFrame(bossStomp2), 120);
+    const reset = window.setTimeout(() => setFrame(bossImg), 700);
+    return () => {
+      window.clearTimeout(second);
+      window.clearTimeout(reset);
+    };
+  }, [phase]);
+
+  return (
+    <img
+      src={frame}
+      alt="The Boss"
+      className="w-60 drop-shadow-[0_12px_20px_rgba(0,0,0,0.8)] transition-all duration-150"
+    />
+  );
+}
 
 const getBossValue = (card: Card) => {
   if (card.rank === 'A') return 1;

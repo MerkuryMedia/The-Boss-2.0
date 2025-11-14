@@ -92,6 +92,8 @@ export interface HandResult {
   winners: { playerId: string; username: string; amount: number }[];
   bossTotal: number;
   description: string;
+  winType?: 'fold' | 'closest' | 'exact' | 'oxtail' | 'split';
+  comboCardCount?: number;
 }
 
 export interface JoinTableMessage {

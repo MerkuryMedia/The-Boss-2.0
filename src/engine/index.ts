@@ -69,6 +69,7 @@ export class GameEngine {
   private comboQueue: SeatIndex[] = [];
   private comboIndex = 0;
   private lastResult?: HandResult;
+  private oxtailActive = false;
 
   private broadcastCallback?: (event: EngineEvent) => void;
 
@@ -314,12 +315,14 @@ export class GameEngine {
     this.comboIndex = 0;
     this.lastResult = undefined;
     this.actedThisRound.clear();
+    this.oxtailActive = false;
     this.broadcast();
   }
 
   private beginHand(players: EnginePlayer[]) {
     this.handNumber += 1;
     this.resetPlayersForHand(players);
+    this.oxtailActive = false;
     this.deck = this.buildDeck();
     this.bossCards = this.drawCards(5);
     this.bossRevealedCount = 3;
@@ -516,6 +519,8 @@ export class GameEngine {
         winners: [{ playerId: recipient.id, username: recipient.username, amount: award }],
         bossTotal: this.computeBossTotal(),
         description: `${recipient.username} wins by default`,
+        winType: 'fold',
+        comboCardCount: 0,
       };
       this.emit({ type: 'result', result: this.lastResult });
     }
@@ -561,11 +566,19 @@ export class GameEngine {
       }
       return;
     }
-    this.awardPot(best.player);
+    const comboCount = best.player.comboSelection.length;
+    const exactMatch = best.diff === 0;
+    const winType: 'closest' | 'exact' | 'oxtail' =
+      this.oxtailActive ? 'oxtail' : exactMatch ? 'exact' : 'closest';
+    this.awardPot(best.player, {
+      winType,
+      comboCardCount: comboCount,
+    });
   }
 
   private startOxtail() {
     this.phase = 'oxtail';
+    this.oxtailActive = true;
     const newCard = this.drawCards(1)[0];
     this.bossCards.push(newCard);
     this.bossRevealedCount += 1;
@@ -581,18 +594,25 @@ export class GameEngine {
       winners: players.map((p) => ({ playerId: p.id, username: p.username, amount: award })),
       bossTotal: this.computeBossTotal(),
       description: `Split pot among ${players.length} players`,
+      winType: 'split',
+      comboCardCount: undefined,
     };
     this.emit({ type: 'result', result: this.lastResult });
     this.endHand();
   }
 
-  private awardPot(player: EnginePlayer) {
+  private awardPot(
+    player: EnginePlayer,
+    details?: { winType?: 'closest' | 'exact' | 'oxtail'; comboCardCount?: number },
+  ) {
     const total = this.totalPot();
     player.stack += total;
     this.lastResult = {
       winners: [{ playerId: player.id, username: player.username, amount: total }],
       bossTotal: this.computeBossTotal(),
       description: `${player.username} wins ${total}`,
+      winType: details?.winType,
+      comboCardCount: details?.comboCardCount,
     };
     this.emit({ type: 'result', result: this.lastResult });
     this.endHand();
@@ -600,6 +620,7 @@ export class GameEngine {
 
   private endHand() {
     this.phase = 'waiting';
+    this.oxtailActive = false;
     this.bossCards = [];
     this.bossRevealedCount = 0;
     this.bossVisible = false;
